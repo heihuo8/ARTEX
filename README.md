@@ -9,7 +9,9 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 </div>
 
-本仓库为独立维护的 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX)，保留 https://github.com/Autumn-27/ARTEX 的原始提交历史与 AGPL-3.0 许可证。程序发布包从本仓库 Releases 下载，Docker 镜像 [ruoji6/artex](https://hub.docker.com/r/ruoji6/artex) 由本仓库 GitHub Actions 构建并发布。
+本仓库为 [heihuo8/ARTEX](https://github.com/heihuo8/ARTEX) 自定义发行版，上游为 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX)，保留原始提交历史与 AGPL-3.0 许可证。程序发布包从本仓库 Releases 下载，Docker 镜像 `ghcr.io/heihuo8/artex` 由本仓库 GitHub Actions 构建并发布。
+
+自定义功能：系统配置中提供一个“全局 Agent 提示词”总开关。启用后，提示词会在每次 Agent 调用时动态加入系统提示；关闭后立即停止注入，不需要逐个修改 Agent，也不需要重启服务。
 
 ---
 ## 致谢 
@@ -114,7 +116,7 @@ Demo 只运行 `web/` 前端，构建时启用 `NEXT_PUBLIC_MOCK=1`，不需要 
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
-git clone https://github.com/RuoJi6/ARTEX.git
+git clone https://github.com/heihuo8/ARTEX.git
 cd ARTEX
 ./install.sh
 ```
@@ -129,16 +131,16 @@ cd ARTEX
 ### 方式二：Docker Compose（手动）
 
 ```bash
-git clone https://github.com/RuoJi6/ARTEX.git
+git clone https://github.com/heihuo8/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 ruoji6/artex 镜像 + postgres
+docker compose up -d          # 拉取 ghcr.io/heihuo8/artex 镜像 + postgres
 # → http://localhost:8787
 ```
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
-`.env` 中默认 `ARTEX_IMAGE=ruoji6/artex`，`ARTEX_TAG=latest` 使用最新镜像，也可固定为 `v0.3.17`（完整镜像地址 `ruoji6/artex:v0.3.17`）。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构，ARM64 Kali 无需自行编译。初次部署请修改 `POSTGRES_PASSWORD`；运行服务无需配置 Docker Hub 发布 Token。
+`.env` 中默认 `ARTEX_IMAGE=ghcr.io/heihuo8/artex`，`ARTEX_TAG=latest` 使用最新自定义镜像，也可固定为 `v0.3.30.1`。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构。公开镜像无需登录 GHCR；初次部署请修改 `POSTGRES_PASSWORD`。
 
 远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。
 旧版 SSE 服务通常使用 `GET /sse` 建立事件流，再通过服务返回的
@@ -147,7 +149,7 @@ docker compose up -d          # 拉取 ruoji6/artex 镜像 + postgres
 
 ### 方式三：下载预编译二进制（Releases）
 
-到本仓库的 [Releases](https://github.com/RuoJi6/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`。Linux ARM64（包括 ARM64 Kali）选择 `linux-arm64`，x86_64 选择 `linux-amd64`：
+到本仓库的 [Releases](https://github.com/heihuo8/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`。Linux ARM64（包括 ARM64 Kali）选择 `linux-arm64`，x86_64 选择 `linux-amd64`：
 
 ```bash
 cp config.example.json config.json   # 填好 database 连接
@@ -197,7 +199,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 在 **系统配置** 页（侧边栏「系统配置」→ `/system/settings`）的**版本与更新**卡片里，可以直接检查并安装新版本，无需登录服务器。
 
-本仓库构建的程序固定从 `RuoJi6/ARTEX` 的最新正式 GitHub Release 检查更新，跳过草稿和预发布版本。旧版官方程序仍指向原作者仓库，因此首次切换必须手动安装本仓库构建的程序；以后发布更高的三段式版本即可通过页面升级。仅推送 main 或 Git 标签但未发布 Release，不会产生可在线安装的新版本。
+本仓库构建的程序固定从 `heihuo8/ARTEX` 的最新正式 GitHub Release 检查更新，跳过草稿和预发布版本。首次从上游版切换时需要安装本仓库的镜像或程序；之后可通过页面更新本仓库的二进制。Docker 部署更推荐拉取新镜像，确保程序和镜像内工具链一起升级。
 
 点「更新」后：下载当前平台的发布包 → 比对 Release 的 `SHA256SUMS` → 用 `-h` 冒烟测试新二进制 → 暂存为 `artex.new` → 程序退出，由 `start.sh` / `start.bat` 重新拉起并完成换装。页面会自动等到新版本上线后刷新。
 
@@ -211,17 +213,39 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ### 维护者：通过 GitHub Actions 发布在线更新
 
-发布工作流为 `.github/workflows/release.yml`。推送正式标签会触发构建，也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。标签必须是 `v主版本.次版本.修订号`，例如下例的 `v0.3.17`；后续版本必须高于用户正在运行的版本。
+发布工作流为 `.github/workflows/release.yml`。推送自定义版本标签会自动构建五个平台程序包、GitHub Release，以及 GHCR 的 AMD64 / ARM64 镜像。标签采用 `v上游版本.自定义修订号`，例如基于上游 `v0.3.30` 的首个自定义版本为 `v0.3.30.1`。
 
 ```bash
 git push origin main
-git tag v0.3.17
-git push origin v0.3.17
+git tag v0.3.30.1
+git push origin v0.3.30.1
 ```
 
 工作流固定标签对应的提交，用 Node.js 22 导出前端，按照 `go.mod` 指定的 Go 版本编译内嵌前端的五个平台程序，并生成 ZIP 与 `SHA256SUMS`。AMD64 和 ARM64 镜像分别在 GitHub 原生 runner 上构建，连接临时 PostgreSQL 验证程序启动、版本和内嵌前端；两种架构都通过后发布多架构镜像的版本标签与 `latest`。镜像发布成功后上传完整 ZIP 和校验文件，最后公开 Release。已公开的同版本不允许覆盖，应发布新标签。
 
-维护者需在本仓库 Settings → Secrets and variables → Actions 中配置变量 `ARTEX_DOCKER_IMAGE`（Docker Hub 用户名/镜像名）和 Secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（有镜像推送权限）。程序包通过 GitHub 自带 `GITHUB_TOKEN` 上传，镜像通过上述凭据推送到 Docker Hub。凭据只供工作流登录使用，不写入源码或镜像。镜像地址同时记录在 `.env.example` 和 Compose 默认值中。
+工作流使用 GitHub 自带的 `GITHUB_TOKEN` 发布 Release 和 `ghcr.io/heihuo8/artex`，无需配置 Docker Hub Token。仓库 Actions 权限需要允许读取内容及写入 Packages；首次发布后，在 GitHub Packages 页面确认镜像可见性为 Public。
+
+### 后续同步上游
+
+首次添加上游仓库：
+
+```bash
+git remote add upstream https://github.com/RuoJi6/ARTEX.git
+git fetch upstream
+```
+
+以后上游更新时执行：
+
+```bash
+./sync-upstream.sh
+# 如有冲突，只处理上游改动与自定义功能重叠的文件
+git push origin main
+
+# 基于新的上游版本发布自己的版本，例如：
+./publish.sh v0.3.31.1
+```
+
+只执行 `git pull` 不等于同步上游：`origin` 是自己的仓库，必须从 `upstream` 获取原维护者更新。不要把上游分支强制覆盖到自己的 `main`，否则会丢失全局提示词功能。
 
 ### 已有 Docker 部署迁移到本仓库镜像
 
@@ -243,7 +267,7 @@ curl --fail http://127.0.0.1:8787/api/health
 docker compose logs --tail=50 artex
 ```
 
-继续使用原部署目录和 Compose 项目名称，确保 `./data`、`./skills` 和 PostgreSQL 数据卷仍指向原数据。迁移后程序从 `RuoJi6/ARTEX` 检查在线更新；后续可用页面更新程序或上述命令更新整个镜像。
+继续使用原部署目录和 Compose 项目名称，确保 `./data`、`./skills` 和 PostgreSQL 数据卷仍指向原数据。迁移后程序从 `heihuo8/ARTEX` 检查在线更新；后续可用页面更新程序或上述命令更新整个镜像。
 
 首次迁移已有 Docker 部署时，将已校验的新 ARM64 ZIP 解压到宿主机，备份原程序，然后只替换已有容器中的 `/app/artex`。例如现有容器名为 `artex-artex-1`：
 
@@ -277,7 +301,7 @@ cd ARTEX
 ```bash
 cd ARTEX
 git pull                       # 更新 compose / 脚本（可选）
-# 指定版本：在 .env 设 ARTEX_TAG=v0.3.17；不设则用 latest
+# 指定版本：在 .env 设 ARTEX_TAG=v0.3.30.1；不设则用 latest
 docker compose pull artex
 docker compose up -d artex     # 换新镜像重启 → 自动迁移 schema
 docker image prune -f          # 清理旧镜像（可选）
@@ -285,7 +309,7 @@ docker image prune -f          # 清理旧镜像（可选）
 
 ### 方式四：预编译二进制（Releases）
 
-到 [Releases](https://github.com/RuoJi6/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
+到 [Releases](https://github.com/heihuo8/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
 
 ```bash
 cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./

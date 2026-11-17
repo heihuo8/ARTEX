@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -11,6 +12,10 @@ import (
 // When nil or no override exists, agents use their built-in default prompt — so
 // behavior is identical until a user edits a prompt in the UI.
 var PromptOverride func(agentKey string) (string, bool)
+
+// GlobalSystemPrompt supplies plain text prepended to every agent prompt.
+// The text is intentionally not parsed as a Go template.
+var GlobalSystemPrompt func() string
 
 // OpsecEnabled is wired by the server to the persisted global setting. Keeping
 // the block here makes it a code-owned runtime tail: database-edited prompts
@@ -51,6 +56,18 @@ func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
 // half-rendered prompt. Callers append the code-owned tail (trafficTool / 中间产物
 // 输出规约) AFTER this, so those can't be edited away via the DB body.
 func renderSystem(agentKey, def string, vars any) string {
+	body := renderAgentSystem(agentKey, def, vars)
+	if GlobalSystemPrompt == nil {
+		return body
+	}
+	global := GlobalSystemPrompt()
+	if strings.TrimSpace(global) == "" {
+		return body
+	}
+	return global + "\n\n" + body
+}
+
+func renderAgentSystem(agentKey, def string, vars any) string {
 	tmpl := def
 	if PromptOverride != nil {
 		if t, ok := PromptOverride(agentKey); ok && t != "" {

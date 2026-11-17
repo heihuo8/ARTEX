@@ -122,7 +122,7 @@ func CompareVersions(a, b string) (int, bool) {
 	if !aok || !bok {
 		return 0, false
 	}
-	for i := range 3 {
+	for i := range 4 {
 		if av[i] != bv[i] {
 			if av[i] < bv[i] {
 				return -1, true
@@ -133,26 +133,27 @@ func CompareVersions(a, b string) (int, bool) {
 	return 0, true
 }
 
-// parseVersion 解析 "v0.3.7" / "0.3.7" 形式的版本号为 [3]int。
+// parseVersion parses upstream three-part versions and fork four-part versions.
+// Missing the fork revision is equivalent to a trailing zero.
 //
-// 只接受纯净的三段式：build.sh 在非 tag 构建时用 git describe 产出
+// 只接受纯净的三段式或四段式：build.sh 在非 tag 构建时用 git describe 产出
 // "0.3.7-2-gabc1234" 这类带后缀的版本，它们必须被判为不可比较，而不是被当成
 // 0.3.7 —— 否则开发构建会被误判为"已是最新"或被正式版覆盖。
-func parseVersion(s string) ([3]int, bool) {
+func parseVersion(s string) ([4]int, bool) {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "v")
 	if s == "" {
-		return [3]int{}, false
+		return [4]int{}, false
 	}
 	parts := strings.Split(s, ".")
-	if len(parts) != 3 {
-		return [3]int{}, false
+	if len(parts) != 3 && len(parts) != 4 {
+		return [4]int{}, false
 	}
-	var out [3]int
+	var out [4]int
 	for i, p := range parts {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
-			return [3]int{}, false
+			return [4]int{}, false
 		}
 		out[i] = n
 	}

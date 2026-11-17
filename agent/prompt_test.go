@@ -6,7 +6,10 @@ import (
 )
 
 func TestRenderSystemOverrideAndFallback(t *testing.T) {
-	t.Cleanup(func() { PromptOverride = nil })
+	t.Cleanup(func() {
+		PromptOverride = nil
+		GlobalSystemPrompt = nil
+	})
 
 	// no override → built-in default
 	PromptOverride = nil
@@ -78,5 +81,23 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+}
+
+func TestRenderSystemGlobalPrompt(t *testing.T) {
+	t.Cleanup(func() {
+		PromptOverride = nil
+		GlobalSystemPrompt = nil
+	})
+
+	GlobalSystemPrompt = func() string { return "GLOBAL {{.Literal}}" }
+	got := renderSystem("planner", "DEFAULT {{.Goal}}", PlannerVars{Goal: "goal"})
+	if got != "GLOBAL {{.Literal}}\n\nDEFAULT goal" {
+		t.Fatalf("global prompt was not prepended literally: %q", got)
+	}
+
+	GlobalSystemPrompt = func() string { return "  \n\t" }
+	if got := renderSystem("planner", "DEFAULT", PlannerVars{}); got != "DEFAULT" {
+		t.Fatalf("blank global prompt changed output: %q", got)
 	}
 }

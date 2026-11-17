@@ -1148,6 +1148,9 @@ export const api = {
   setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string }) =>
     put<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth", settings),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+  getGlobalPrompt: () => get<{ enabled: boolean; prompt: string }>("/global-prompt"),
+  saveGlobalPrompt: (settings: { enabled: boolean; prompt: string }) =>
+    put<{ enabled: boolean; prompt: string }>("/global-prompt", settings),
 
   // ---- MCP 服务端（ARTEX 对外暴露的 /mcp）：开关、访问令牌、调用审计 ----
   mcpServerSettings: () => get<McpServerSettings>("/mcp-server/settings"),

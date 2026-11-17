@@ -31,6 +31,7 @@ import type { EgressReport, LLMProfile, ProxyPoolEntry, Settings, WorkerPool } f
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
+import { GlobalPromptSection } from "./_components/global-prompt-section";
 import { McpServerCard } from "./_components/mcp-server-card";
 import { UpdateCard } from "./_components/update-card";
 
@@ -768,6 +769,9 @@ export default function SystemSettingsPage() {
             {isSettingVisible("system", "settings.keywords.update") ? <UpdateCard /> : null}
             {isSettingVisible("system", "settings.keywords.basicAuth") ? <BasicAuthCard /> : null}
             {isSettingVisible("system", "settings.keywords.mcpServer") ? <McpServerCard /> : null}
+            {isSettingVisible("agent", "全局提示词 global prompt 全局指令 Agent") ? (
+              <GlobalPromptSection />
+            ) : null}
 
             <Card
               className={`${isSettingVisible("traffic", "settings.keywords.trafficCapture") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
