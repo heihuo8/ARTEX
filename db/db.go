@@ -272,6 +272,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedBuiltinSkillVisibility(); err != nil {
 		return fmt.Errorf("seed skill visibility: %w", err)
 	}
+	if err := d.seedSecurityWorkflowSkillVisibility(); err != nil {
+		return fmt.Errorf("seed security workflow skill visibility: %w", err)
+	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
 	}
@@ -342,6 +345,57 @@ ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
 		}
 	}
 	return nil
+}
+
+// securityWorkflowSkillVisibility contains the default bindings for the skills
+// shipped by the custom distribution. Unlike the legacy built-in seed above,
+// these defaults are applied once so a later user toggle-off survives restarts.
+var securityWorkflowSkillVisibility = map[string][]string{
+	"apk-recon":         {"auto", "pentest", "worker"},
+	"chains-ad":         {"auto", "pentest", "planner", "worker"},
+	"chains-app":        {"auto", "pentest", "planner", "worker"},
+	"chains-meta":       {"auto", "pentest", "planner", "worker"},
+	"chains-pivot":      {"auto", "pentest", "planner", "worker"},
+	"chains-priv":       {"auto", "pentest", "planner", "worker"},
+	"chains-recon":      {"auto", "pentest", "planner", "worker"},
+	"chains-rev":        {"auto", "pentest", "planner", "worker"},
+	"chains-web":        {"auto", "pentest", "planner", "worker"},
+	"cloud-security":    {"auto", "pentest", "worker"},
+	"code-audit":        {"auto", "pentest", "worker"},
+	"credential-attack": {"auto", "pentest", "worker"},
+	"db-utilization":    {"auto", "pentest", "worker"},
+	"dir-bruteforce":    {"auto", "pentest", "worker"},
+	"host-enum":         {"auto", "pentest", "worker"},
+	"unauth-exploit":    {"auto", "pentest", "worker"},
+	"资金盘":               {"auto", "pentest", "worker"},
+}
+
+func (d *DB) seedSecurityWorkflowSkillVisibility() error {
+	const settingKey = "security_workflow_skill_visibility_v1"
+	if v, _, _ := d.GetSetting(settingKey); v == "done" {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for skillName, agentKeys := range securityWorkflowSkillVisibility {
+		for _, key := range agentKeys {
+			if _, err := tx.Exec(`
+INSERT INTO agent_skill_visibility(agent_id, skill_name, enabled)
+SELECT id, $2, true FROM agents WHERE key=$1
+ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
+				return fmt.Errorf("skill %s -> agent %s: %w", skillName, key, err)
+			}
+		}
+	}
+	if _, err := tx.Exec(`
+INSERT INTO settings(key, value) VALUES ($1, 'done')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, settingKey); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // seedDefaultInterceptRules inserts built-in safety intercept rules once on
