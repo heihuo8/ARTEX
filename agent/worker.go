@@ -251,14 +251,14 @@ func workerTrafficBlock(recording bool) string {
 // pentest agent's prompt — intermediate artifacts must land in the shared work
 // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
 func artifactSpec(dir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。" + runtimeEvidenceSpec(dir)
 }
 
 // workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
 // by the engine (ensureRunDir), so it just writes relative paths there — no manual
 // mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。" + runtimeEvidenceSpec(runDir)
 }
 
 // ensureRunDir builds and creates an agent's working directory under base:
@@ -444,7 +444,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		TavilySearchAPIKey: w.webSearch.TavilyKey,
 		WebSearchProxy:     w.webSearch.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
-		BashEnv:    proxyEnv(proxyAddr, w.proxyCACert),
+		BashEnv:    scopedRuntimeEnv(proxyEnv(proxyAddr, w.proxyCACert), filepath.Dir(runDir)),
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// 墙钟预算,轮边界判,不打断半路;0 = 不限。有任务级 deadline 时夹逼到 min(自身预算,

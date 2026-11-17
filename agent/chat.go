@@ -80,7 +80,7 @@ func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
 // agent's system prompt. Mirrors artifactSpec but without pentest-specific
 // wording ("payload", "抓响应体") that would be odd in a general assistant.
 func chatWorkDirSpec(workDir string) string {
-	return "\n\n**文件输出规约**：需要写文件时，一律写到工作目录 " + workDir + "（这是默认 CWD，相对路径即落在这里，也可用该绝对路径）——不要写 /tmp 或其他绝对路径。"
+	return "\n\n**文件输出规约**：需要写文件时，一律写到工作目录 " + workDir + "（这是默认 CWD，相对路径即落在这里，也可用该绝对路径）——不要写 /tmp 或其他绝对路径。" + runtimeEvidenceSpec(workDir)
 }
 
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
@@ -148,7 +148,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		BraveSearchAPIKey:  ws.BraveKey,
 		TavilySearchAPIKey: ws.TavilyKey,
 		WebSearchProxy:     ws.Proxy,
-		BashEnv:            proxyEnv(proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		BashEnv:            scopedRuntimeEnv(proxyEnv(proxyAddr, c.proxyCACert), sessionWorkDir), // 代理 + 会话独立 HOME/TMP
 		WorkingDir:         sessionWorkDir,
 		MaxTurns:           maxTurns,
 		MaxDuration:        maxDuration,

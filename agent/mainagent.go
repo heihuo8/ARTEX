@@ -156,8 +156,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		BraveSearchAPIKey:  m.webSearch.BraveKey,
 		TavilySearchAPIKey: m.webSearch.TavilyKey,
 		WebSearchProxy:     m.webSearch.Proxy,
-		BashEnv:            proxyEnv(proxyAddr, m.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:         mainDir,                            // 本任务工作目录 <workDir>/tasks/<taskID>
+		BashEnv:            scopedRuntimeEnv(proxyEnv(proxyAddr, m.proxyCACert), mainDir), // 代理 + 任务独立 HOME/TMP
+		WorkingDir:         mainDir,                                                       // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:      cmdOutDir(mainDir),
 		MaxTurns:           m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		Compaction:         compactionConfig(m.compactionWindow()), // long chats stay within the window
