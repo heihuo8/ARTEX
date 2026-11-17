@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -426,8 +427,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		BraveSearchAPIKey:  p.webSearch.BraveKey,
 		TavilySearchAPIKey: p.webSearch.TavilyKey,
 		WebSearchProxy:     p.webSearch.Proxy,
-		BashEnv:            scopedRuntimeEnv(proxyEnv(proxyAddr, p.proxyCACert), taskDir), // 代理 + 任务独立 HOME/TMP
-		WorkingDir:         taskDir,                                                       // 本任务工作目录 <workDir>/tasks/<taskID>
+		BashEnv:            scopedRuntimeEnv(proxyEnv(proxyAddr, p.proxyCACert), filepath.Join(taskDir, "planner")), // 代理 + 独立临时目录
+		WorkingDir:         taskDir,                                                                                 // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:      cmdOutDir(taskDir),
 		MaxTurns:           p.maxTurns, // 0 = unlimited (configurable in agent management)
 		MaxDuration:        maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
