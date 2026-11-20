@@ -1522,6 +1522,7 @@ type HostDeleteStage struct {
 	stageDir string
 	moves    []stagedTrafficPath
 	deleted  int64
+	deferred bool
 	done     bool
 }
 
@@ -1547,6 +1548,32 @@ func (t *Traffic) StageDeleteHostsExactForArchive(hosts []string, archiveID, tas
 		return nil, errors.New("archive and task ids must be positive")
 	}
 	return t.stageDeleteHostsExact(hosts, archiveID, taskID)
+}
+
+// StageDeferredArchiveHostCleanup persists the host cleanup plan and moves any
+// legacy trees out of the live namespace, but deliberately leaves SQLite rows
+// untouched. Once PostgreSQL marks the archive ready, startup/idle recovery can
+// consume the journal in bounded batches without holding up the live FIFO.
+func (t *Traffic) StageDeferredArchiveHostCleanup(hosts []string, archiveID, taskID int64) (*HostDeleteStage, error) {
+	if archiveID <= 0 || taskID <= 0 {
+		return nil, errors.New("archive and task ids must be positive")
+	}
+	t.wmu.Lock()
+	stage := &HostDeleteStage{traffic: t, deferred: true}
+	unique := uniqueArchiveHosts(hosts)
+	legacy := make([]string, 0, len(unique))
+	for _, host := range unique {
+		legacy = append(legacy, filepath.Join(t.dir, sanitize(host)))
+	}
+	var err error
+	stage.stageDir, stage.moves, err = t.stageTreesForArchive(legacy, unique, archiveID, taskID)
+	if err != nil {
+		if rollbackErr := stage.rollbackLocked(); rollbackErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("回滚流量清理清单: %w", rollbackErr))
+		}
+		return nil, err
+	}
+	return stage, nil
 }
 
 func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64) (*HostDeleteStage, error) {
@@ -1836,19 +1863,24 @@ func (s *HostDeleteStage) commit(runMaintenance bool) error {
 	if s == nil || s.done {
 		return nil
 	}
-	if err := s.tx.Commit(); err != nil {
-		// A failed SQLite commit normally rolls the transaction back. Restore the
-		// trees so the traffic store remains internally consistent and recoverable.
-		restoreErr := restoreTrees(s.stageDir, s.moves)
-		s.done = true
-		s.traffic.wmu.Unlock()
-		return errors.Join(fmt.Errorf("提交流量索引删除: %w", err), restoreErr)
+	if s.tx != nil {
+		if err := s.tx.Commit(); err != nil {
+			// A failed SQLite commit normally rolls the transaction back. Restore the
+			// trees so the traffic store remains internally consistent and recoverable.
+			restoreErr := restoreTrees(s.stageDir, s.moves)
+			s.done = true
+			s.traffic.wmu.Unlock()
+			return errors.Join(fmt.Errorf("提交流量索引删除: %w", err), restoreErr)
+		}
 	}
 	// Unlinking the staged trees is what used to hold the write lock for hours;
 	// it now runs in the background, while collection below only needs them to be
 	// out of the live tree — which the staging rename already guaranteed.
 	s.done = true
 	s.traffic.wmu.Unlock()
+	if s.deferred {
+		return nil
+	}
 	s.traffic.reapStage(s.stageDir)
 	if runMaintenance {
 		s.traffic.RunDeferredMaintenance()

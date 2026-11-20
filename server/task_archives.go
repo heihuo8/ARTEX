@@ -271,7 +271,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	var trafficStage *traffic.HostDeleteStage
 	if s.m.traffic != nil && len(snapshot.ExclusiveHosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compact_traffic", 68)
-		trafficStage, err = s.m.traffic.StageDeleteHostsExactForArchive(snapshot.ExclusiveHosts, job.ID, job.TaskID)
+		trafficStage, err = s.m.traffic.StageDeferredArchiveHostCleanup(snapshot.ExclusiveHosts, job.ID, job.TaskID)
 		if err != nil {
 			return err
 		}
@@ -288,7 +288,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	committed = true
 	removePackage = false
 	if trafficStage != nil {
-		if err := trafficStage.CommitDeferredMaintenance(); err != nil {
+		if err := trafficStage.Commit(); err != nil {
 			warning := "归档已完成，但独占流量热存储清理失败（归档包仍可恢复）：" + err.Error()
 			log.Printf("[task-archive] task %s: %s", taskID, warning)
 			_ = s.m.pg.AppendTaskArchiveWarning(job.ID, warning)
