@@ -45,6 +45,24 @@ func (s *Server) startTaskArchiveWorker() {
 		s.archiveWG.Add(1)
 		go func() {
 			defer s.archiveWG.Done()
+			// Live archive jobs take priority over cleanup left by an older,
+			// already-committed archive. Both paths need the traffic writer lock;
+			// starting recovery first can leave the visible queue stuck at 38% for
+			// hours. Wait until the live archive queue is empty, then use the idle
+			// window to finish the historical cleanup.
+			for {
+				pending, err := s.m.pg.PendingTaskArchiveIDs()
+				if err != nil {
+					log.Printf("[task-archive] inspect pending jobs before traffic recovery: %v", err)
+				} else if len(pending) == 0 {
+					break
+				}
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-time.After(taskArchivePollInterval):
+				}
+			}
 			if err := s.m.traffic.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
 				if taskID <= 0 {
 					return false, errors.New("归档流量暂存日志缺少任务 ID")
