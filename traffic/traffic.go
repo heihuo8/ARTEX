@@ -1689,9 +1689,20 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 			}
 			continue
 		}
-		if err := t.deleteArchivedHosts(journal.Hosts); err != nil {
-			errs = append(errs, err)
+		// A normal archive commits the SQLite deletion before PostgreSQL marks
+		// the package ready, then removes this journal asynchronously. If the
+		// process restarts in that short window, the rows are already gone and
+		// replaying the FTS delete can rewrite tens of gigabytes for no benefit.
+		deleted, checkErr := t.hostsHaveNoExchanges(journal.Hosts)
+		if checkErr != nil {
+			errs = append(errs, checkErr)
 			continue
+		}
+		if !deleted {
+			if err := t.deleteArchivedHosts(journal.Hosts); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
 		if err := os.RemoveAll(stageDir); err != nil {
 			errs = append(errs, err)
@@ -1701,9 +1712,7 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 	}
 	if needsGC {
 		t.reclaim()
-		if err := t.gcBlobs(); err != nil {
-			errs = append(errs, err)
-		}
+		t.gcBlobsAsync()
 	}
 	return errors.Join(errs...)
 }

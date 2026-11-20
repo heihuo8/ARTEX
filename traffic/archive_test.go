@@ -163,6 +163,32 @@ func TestRecoverArchiveHostDeleteStageCompletesAfterPostgresCommit(t *testing.T)
 	}
 }
 
+func TestRecoverCommittedArchiveSkipsAlreadyDeletedIndex(t *testing.T) {
+	trafficDir := t.TempDir()
+	tr, err := Open(trafficDir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	const host = "already-deleted.example"
+	stageDir := filepath.Join(trafficDir, "_delete_staging", "hosts-fixture")
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := "{\"version\":1,\"archive_id\":19,\"task_id\":44,\"hosts\":[\"" + host + "\"],\"moves\":null}"
+	if err := os.WriteFile(filepath.Join(stageDir, hostDeleteStageJournalName), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.RecoverHostDeleteStages(func(id, taskID int64) (bool, error) {
+		return id == 19 && taskID == 44, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Fatalf("committed empty stage remains: %v", err)
+	}
+}
+
 func insertArchiveRecoveryExchange(t *testing.T, tr *Traffic, id, host string) {
 	t.Helper()
 	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
