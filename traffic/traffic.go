@@ -1568,12 +1568,18 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 		return abort(err)
 	}
 	stage.tx = tx
-	for _, h := range unique {
-		n, err := t.deleteWhere(tx, `host=?`, h)
+	if len(unique) > 0 {
+		placeholders := make([]string, len(unique))
+		args := make([]any, len(unique))
+		for i, host := range unique {
+			placeholders[i] = "?"
+			args[i] = host
+		}
+		n, err := t.deleteWhere(tx, `host IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
 			return fail(err)
 		}
-		stage.deleted += n
+		stage.deleted = n
 	}
 
 	stage.stageDir, stage.moves, err = t.stageTreesForArchive(legacy, unique, archiveID, taskID)
@@ -1706,8 +1712,15 @@ func (t *Traffic) deleteArchivedHosts(hosts []string) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	for _, host := range hosts {
-		if _, err := t.deleteWhere(tx, `host=?`, host); err != nil {
+	unique := uniqueArchiveHosts(hosts)
+	if len(unique) > 0 {
+		placeholders := make([]string, len(unique))
+		args := make([]any, len(unique))
+		for i, host := range unique {
+			placeholders[i] = "?"
+			args[i] = host
+		}
+		if _, err := t.deleteWhere(tx, `host IN (`+strings.Join(placeholders, ",")+`)`, args...); err != nil {
 			return err
 		}
 	}
