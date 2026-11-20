@@ -224,7 +224,13 @@ func (s *taskArchiveFileStage) commit() error {
 		return nil
 	}
 	s.done = true
-	return os.RemoveAll(s.root)
+	root := s.root
+	go func() {
+		if err := os.RemoveAll(root); err != nil {
+			log.Printf("[task-archive] 清理已归档暂存目录 %s 失败：%v", root, err)
+		}
+	}()
+	return nil
 }
 
 func installTaskArchiveFiles(dataDir, extractedDir, taskID string, archiveID int64) (*taskArchiveRestoreFiles, error) {
