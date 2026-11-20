@@ -72,6 +72,29 @@ VALUES(?,?,?,?,?)`, id, requestHead, []byte("payload"), responseHead, []byte(`{"
 	}
 }
 
+func TestTrafficArchiveProgress(t *testing.T) {
+	trafficDir := t.TempDir()
+	tr, err := Open(trafficDir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	const host = "progress.example"
+	for _, id := range []string{"progress-1", "progress-2"} {
+		insertArchiveRecoveryExchange(t, tr, id, host)
+	}
+	var updates [][2]int64
+	count, err := tr.ExportHostsWithProgress([]string{host}, filepath.Join(t.TempDir(), "traffic"), func(exported, total int64) {
+		updates = append(updates, [2]int64{exported, total})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || len(updates) != 2 || updates[0] != [2]int64{1, 2} || updates[1] != [2]int64{2, 2} {
+		t.Fatalf("count=%d updates=%v", count, updates)
+	}
+}
+
 func TestRecoverArchiveHostDeleteStageRollsBackBeforePostgresCommit(t *testing.T) {
 	trafficDir := t.TempDir()
 	tr, err := Open(trafficDir, "127.0.0.1:0")

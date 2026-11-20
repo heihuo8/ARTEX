@@ -183,6 +183,28 @@ func (d *DB) GetTaskArchiveByTask(taskID int64) (*TaskArchive, error) {
 	return item, err
 }
 
+// PendingTaskArchiveIDs returns tasks whose live data is waiting to be moved
+// into cold storage. Startup must not restart their planner/worker runtimes: the
+// archive worker owns the next transition and needs the task to stay quiescent.
+func (d *DB) PendingTaskArchiveIDs() (map[int64]struct{}, error) {
+	rows, err := d.Query(`SELECT task_id FROM task_archives
+WHERE state IN ('archive_queued','archiving')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := map[int64]struct{}{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = struct{}{}
+	}
+	return ids, rows.Err()
+}
+
 func (d *DB) ListTaskArchives(search, state string, page, size int) (TaskArchivePage, error) {
 	if page < 1 {
 		page = 1

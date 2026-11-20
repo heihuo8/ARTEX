@@ -37,29 +37,29 @@ func (s *Server) startTaskArchiveWorker() {
 	if s.m == nil || s.m.pg == nil {
 		return
 	}
-	if err := s.m.pg.RecoverTaskArchiveJobs(); err != nil {
-		log.Printf("[task-archive] recover jobs: %v", err)
-	}
-	recoveryFailed := false
-	if err := recoverTaskArchiveStages(s.m.dir, s.m.pg); err != nil {
-		log.Printf("[task-archive] recover file staging: %v", err)
-		recoveryFailed = true
-	}
-	if err := recoverTaskArchiveRestoreStages(s.m.dir, s.m.pg); err != nil {
-		log.Printf("[task-archive] recover restore staging: %v", err)
-		recoveryFailed = true
-	}
-	if err := recoverTaskArchiveDeletePackages(s.m.dir, s.m.pg); err != nil {
-		log.Printf("[task-archive] recover delete packages: %v", err)
-		recoveryFailed = true
-	}
-	if recoveryFailed {
-		log.Printf("[task-archive] worker disabled because startup recovery is incomplete")
-		return
-	}
 	s.archiveWG.Add(1)
 	go func() {
 		defer s.archiveWG.Done()
+		if err := s.m.pg.RecoverTaskArchiveJobs(); err != nil {
+			log.Printf("[task-archive] recover jobs: %v", err)
+		}
+		recoveryFailed := false
+		if err := recoverTaskArchiveStages(s.m.dir, s.m.pg); err != nil {
+			log.Printf("[task-archive] recover file staging: %v", err)
+			recoveryFailed = true
+		}
+		if err := recoverTaskArchiveRestoreStages(s.m.dir, s.m.pg); err != nil {
+			log.Printf("[task-archive] recover restore staging: %v", err)
+			recoveryFailed = true
+		}
+		if err := recoverTaskArchiveDeletePackages(s.m.dir, s.m.pg); err != nil {
+			log.Printf("[task-archive] recover delete packages: %v", err)
+			recoveryFailed = true
+		}
+		if recoveryFailed {
+			log.Printf("[task-archive] worker disabled because startup recovery is incomplete")
+			return
+		}
 		ticker := time.NewTicker(taskArchivePollInterval)
 		defer ticker.Stop()
 		for {
@@ -174,7 +174,22 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
-		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
+		lastTrafficProgress := 38
+		trafficCount, err := s.m.traffic.ExportHostsWithProgress(
+			snapshot.Hosts,
+			filepath.Join(fileStage.payload, "traffic"),
+			func(exported, total int64) {
+				if total <= 0 {
+					return
+				}
+				progress := 38 + min(int(exported*11/total), 11)
+				if progress <= lastTrafficProgress {
+					return
+				}
+				lastTrafficProgress = progress
+				_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", progress)
+			},
+		)
 		if err != nil {
 			return err
 		}
@@ -189,7 +204,20 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compress", 50)
-	originalSize, compressedSize, checksum, err := writeTaskArchivePackage(archivePath, fileStage.payload, snapshot)
+	lastProgress := 50
+	originalSize, compressedSize, checksum, err := writeTaskArchivePackageWithProgress(
+		archivePath,
+		fileStage.payload,
+		snapshot,
+		func(bytesRead int64) {
+			progress := 50 + min(int(bytesRead/(512<<20)), 17)
+			if progress <= lastProgress {
+				return
+			}
+			lastProgress = progress
+			_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compress", progress)
+		},
+	)
 	if err != nil {
 		return err
 	}

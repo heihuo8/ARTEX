@@ -520,6 +520,15 @@ func stageTaskArchivePackageDelete(archivePath string, archiveID int64) (string,
 }
 
 func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchiveSnapshot) (originalSize, compressedSize int64, checksum string, err error) {
+	return writeTaskArchivePackageWithProgress(path, payloadDir, snapshot, nil)
+}
+
+func writeTaskArchivePackageWithProgress(
+	path string,
+	payloadDir string,
+	snapshot *pgdb.TaskArchiveSnapshot,
+	onProgress func(int64),
+) (originalSize, compressedSize int64, checksum string, err error) {
 	if snapshot == nil {
 		return 0, 0, "", errors.New("nil task archive snapshot")
 	}
@@ -558,13 +567,14 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 	hasher := sha256.New()
 	multi := io.MultiWriter(file, hasher)
 	encoder, err := zstd.NewWriter(multi,
-		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(10)),
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)),
 		zstd.WithEncoderCRC(true),
 	)
 	if err != nil {
 		return 0, 0, "", err
 	}
 	tarWriter := tar.NewWriter(encoder)
+	var processedSize int64
 	walkErr := filepath.WalkDir(payloadDir, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -584,6 +594,10 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 			log.Printf("[task-archive] 跳过符号链接（归档不支持，不影响其它文件）：%s", current)
 			return nil
 		}
+		if !taskArchiveFileModeSupported(info.Mode()) {
+			log.Printf("[task-archive] 跳过特殊文件（归档不支持，不影响其它文件）：%s (%s)", current, info.Mode())
+			return nil
+		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
@@ -600,7 +614,15 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(tarWriter, input)
+		reader := io.Reader(input)
+		if onProgress != nil {
+			reader = &taskArchiveProgressReader{
+				reader: input,
+				total:  &processedSize,
+				notify: onProgress,
+			}
+		}
+		_, copyErr := io.Copy(tarWriter, reader)
 		closeErr := input.Close()
 		return errors.Join(copyErr, closeErr)
 	})
@@ -636,6 +658,25 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 	}
 	committed = true
 	return originalSize, compressedSize, checksum, nil
+}
+
+func taskArchiveFileModeSupported(mode fs.FileMode) bool {
+	return mode.IsDir() || mode.IsRegular()
+}
+
+type taskArchiveProgressReader struct {
+	reader io.Reader
+	total  *int64
+	notify func(int64)
+}
+
+func (r *taskArchiveProgressReader) Read(buffer []byte) (int, error) {
+	n, err := r.reader.Read(buffer)
+	if n > 0 {
+		*r.total += int64(n)
+		r.notify(*r.total)
+	}
+	return n, err
 }
 
 func extractTaskArchivePackage(path, expectedSHA, destination string) error {

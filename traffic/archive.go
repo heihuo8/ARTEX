@@ -1,12 +1,14 @@
 package traffic
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,6 +47,13 @@ type ArchiveExchange struct {
 // lock while reading SQLite and blobs, so each body and its index row come from
 // one consistent point in time.
 func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
+	return t.ExportHostsWithProgress(hosts, dir, nil)
+}
+
+// ExportHostsWithProgress streams the traffic manifest instead of retaining all
+// exchanges and inline bodies in memory. The callback receives exported and
+// total exchange counts while the traffic writer lock is held.
+func (t *Traffic) ExportHostsWithProgress(hosts []string, dir string, onProgress func(exported, total int64)) (int64, error) {
 	if t == nil || len(hosts) == 0 {
 		return 0, nil
 	}
@@ -60,25 +69,50 @@ func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
 		placeholders[i] = "?"
 		args[i] = host
 	}
-	rows, err := t.db.Query(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path
-FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,id`, args...)
+	where := ` WHERE e.host IN (` + strings.Join(placeholders, ",") + `)`
+	var total int64
+	if err := t.db.QueryRow(`SELECT count(*) FROM exchanges e`+where, args...).Scan(&total); err != nil {
+		return 0, err
+	}
+	rows, err := t.db.Query(`SELECT e.id,e.ts,e.host,e.method,e.url_template,e.url,e.status,e.content_type,e.req_len,e.resp_len,e.path,
+ b.req_head,b.req_body,b.req_blob,b.resp_head,b.resp_body,b.resp_blob
+FROM exchanges e LEFT JOIN exchange_bodies b ON b.id=e.id`+where+` ORDER BY e.ts,e.id`, args...)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
-	snapshot := ArchiveSnapshot{Version: 1}
+	manifestPath := filepath.Join(dir, "traffic.json")
+	temporary := manifestPath + ".partial"
+	_ = os.Remove(temporary)
+	manifest, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	committed := false
+	defer func() {
+		_ = manifest.Close()
+		if !committed {
+			_ = os.Remove(temporary)
+		}
+	}()
+	buffer := bufio.NewWriterSize(manifest, 256<<10)
+	if _, err := buffer.WriteString("{\"version\":1,\"exchanges\":["); err != nil {
+		return 0, err
+	}
 	blobs := map[string]struct{}{}
+	var exported int64
 	for rows.Next() {
 		var item ArchiveExchange
 		var legacyPath string
+		var reqHead, reqBlob, respHead, respBlob sql.NullString
 		if err := rows.Scan(&item.ID, &item.TS, &item.Host, &item.Method, &item.URLTemplate,
-			&item.URL, &item.Status, &item.ContentType, &item.ReqLen, &item.RespLen, &legacyPath); err != nil {
+			&item.URL, &item.Status, &item.ContentType, &item.ReqLen, &item.RespLen, &legacyPath,
+			&reqHead, &item.ReqBody, &reqBlob, &respHead, &item.RespBody, &respBlob); err != nil {
 			return 0, err
 		}
-		var reqBlob, respBlob sql.NullString
-		err := t.db.QueryRow(`SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
-FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &reqBlob, &item.RespHead, &item.RespBody, &respBlob)
-		if errors.Is(err, sql.ErrNoRows) && strings.TrimSpace(legacyPath) != "" {
+		item.ReqHead, item.RespHead = reqHead.String, respHead.String
+		item.ReqBlob, item.RespBlob = reqBlob.String, respBlob.String
+		if !reqHead.Valid && !respHead.Valid && strings.TrimSpace(legacyPath) != "" {
 			req, readErr := os.ReadFile(filepath.Join(t.dir, legacyPath, "request.http"))
 			if readErr != nil && !os.IsNotExist(readErr) {
 				return 0, readErr
@@ -88,43 +122,101 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 				return 0, readErr
 			}
 			item.ReqHead, item.RespHead = string(req), string(resp)
-		} else if err != nil {
-			return 0, err
 		}
-		item.ReqBlob, item.RespBlob = reqBlob.String, respBlob.String
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
 				blobs[hash] = struct{}{}
 			}
 		}
-		snapshot.Exchanges = append(snapshot.Exchanges, item)
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return 0, err
+		}
+		if exported > 0 {
+			if err := buffer.WriteByte(','); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := buffer.Write(raw); err != nil {
+			return 0, err
+		}
+		exported++
+		if onProgress != nil {
+			onProgress(exported, total)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	if _, err := buffer.WriteString("],\"blobs\":["); err != nil {
+		return 0, err
+	}
+	blobList := make([]string, 0, len(blobs))
 	for hash := range blobs {
+		blobList = append(blobList, hash)
+	}
+	sort.Strings(blobList)
+	for i, hash := range blobList {
 		source, err := t.blobPath(hash)
 		if err != nil {
 			return 0, err
 		}
-		data, err := os.ReadFile(source)
+		if err := copyArchiveBlob(source, filepath.Join(dir, "blobs", hash+".bin")); err != nil {
+			return 0, err
+		}
+		raw, err := json.Marshal(hash)
 		if err != nil {
 			return 0, err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "blobs", hash+".bin"), data, 0o600); err != nil {
+		if i > 0 {
+			if err := buffer.WriteByte(','); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := buffer.Write(raw); err != nil {
 			return 0, err
 		}
-		snapshot.Blobs = append(snapshot.Blobs, hash)
 	}
-	sort.Strings(snapshot.Blobs)
-	raw, err := json.Marshal(snapshot)
+	if _, err := buffer.WriteString("]}\n"); err != nil {
+		return 0, err
+	}
+	if err := buffer.Flush(); err != nil {
+		return 0, err
+	}
+	if err := manifest.Sync(); err != nil {
+		return 0, err
+	}
+	if err := manifest.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(temporary, manifestPath); err != nil {
+		return 0, err
+	}
+	committed = true
+	return exported, nil
+}
+
+func copyArchiveBlob(source, destination string) error {
+	input, err := os.Open(source)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "traffic.json"), raw, 0o600); err != nil {
-		return 0, err
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
 	}
-	return int64(len(snapshot.Exchanges)), nil
+	_, copyErr := io.Copy(output, input)
+	var syncErr error
+	if copyErr == nil {
+		syncErr = output.Sync()
+	}
+	closeErr := output.Close()
+	if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
+		_ = os.Remove(destination)
+		return err
+	}
+	return nil
 }
 
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,

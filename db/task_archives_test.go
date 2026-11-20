@@ -394,6 +394,46 @@ func TestTaskArchiveBlockersIgnoreQueuedDependents(t *testing.T) {
 	}
 }
 
+func TestPendingTaskArchiveIDs(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	task, err := d.CreateTaskWithOptions("pending archive ids", "pending archive ids", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_ = d.DeleteTask(task.ID)
+	}()
+	if err := d.SetPaused(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := d.QueueTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := d.PendingTaskArchiveIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ids[task.ID]; !ok {
+		t.Fatalf("queued task %d missing from pending archive IDs", task.ID)
+	}
+	if _, err := d.Exec(`UPDATE task_archives SET state=$2 WHERE id=$1`, archive.ID, ArchiveReady); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = d.PendingTaskArchiveIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ids[task.ID]; ok {
+		t.Fatalf("ready task %d remained in pending archive IDs", task.ID)
+	}
+}
+
 func TestRecoverInterruptedArchiveRequiresManualRetry(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {

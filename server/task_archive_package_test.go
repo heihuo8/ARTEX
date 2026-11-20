@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -124,6 +125,61 @@ func TestTaskArchivePackageSkipsSymlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(extracted, "link.txt")); !os.IsNotExist(err) {
 		t.Fatalf("symlink should have been skipped, but link.txt exists: %v", err)
+	}
+}
+
+func TestTaskArchivePackageWithProgressRoundTrip(t *testing.T) {
+	payload := t.TempDir()
+	body := bytes.Repeat([]byte("archive progress\n"), 4096)
+	if err := os.WriteFile(filepath.Join(payload, "payload.txt"), body, archiveFileMode); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &pgdb.TaskArchiveSnapshot{FormatVersion: pgdb.TaskArchiveFormatVersion, TaskID: 42}
+	archivePath := filepath.Join(t.TempDir(), "archive.tar.zst")
+	var progressed int64
+	original, compressed, checksum, err := writeTaskArchivePackageWithProgress(
+		archivePath,
+		payload,
+		snapshot,
+		func(processed int64) { progressed = processed },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progressed < int64(len(body)) {
+		t.Fatalf("progressed=%d, want at least %d", progressed, len(body))
+	}
+	if original != progressed || compressed <= 0 || checksum == "" {
+		t.Fatalf("invalid package metrics original=%d compressed=%d checksum=%q", original, compressed, checksum)
+	}
+	extracted := filepath.Join(t.TempDir(), "restore")
+	if err := extractTaskArchivePackage(archivePath, checksum, extracted); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(extracted, "payload.txt"))
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("restored payload mismatch: bytes=%d err=%v", len(got), err)
+	}
+}
+
+func TestTaskArchiveFileModeSupported(t *testing.T) {
+	tests := []struct {
+		name string
+		mode fs.FileMode
+		want bool
+	}{
+		{name: "regular", mode: 0, want: true},
+		{name: "directory", mode: fs.ModeDir, want: true},
+		{name: "named pipe", mode: fs.ModeNamedPipe, want: false},
+		{name: "socket", mode: fs.ModeSocket, want: false},
+		{name: "device", mode: fs.ModeDevice, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := taskArchiveFileModeSupported(tt.mode); got != tt.want {
+				t.Fatalf("taskArchiveFileModeSupported(%v)=%v, want %v", tt.mode, got, tt.want)
+			}
+		})
 	}
 }
 

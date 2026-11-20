@@ -334,9 +334,26 @@ func (s *Server) Close() {
 // including the side-question checkpoint publisher installed during startup.
 func (s *Server) restoreTaskRuntimes() {
 	m := s.m
+	pendingArchives, err := m.pg.PendingTaskArchiveIDs()
+	if err != nil {
+		log.Printf("[task-archive] load pending tasks during startup: %v", err)
+		pendingArchives = map[int64]struct{}{}
+	}
+	isPendingArchive := func(taskID string) bool {
+		id, parseErr := strconv.ParseInt(taskID, 10, 64)
+		if parseErr != nil {
+			return false
+		}
+		_, pending := pendingArchives[id]
+		return pending
+	}
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
 	for _, t := range m.LoadExisting() {
+		if isPendingArchive(t.ID) {
+			s.engine.Pause(t.ID, agent.AbortPausedOnReload)
+			continue
+		}
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
@@ -358,6 +375,9 @@ func (s *Server) restoreTaskRuntimes() {
 	// occupants without live loops, which could permanently block the persistent
 	// FIFO. Paused loops remain idle; queued tasks are admitted below as slots allow.
 	for _, t := range m.List() {
+		if isPendingArchive(t.ID) {
+			continue
+		}
 		lifecycle := t.lifecycleSnapshot()
 		if !lifecycle.Queued && !isTerminalStatus(lifecycle.Status) {
 			s.engine.Run(s.ctx, t)
