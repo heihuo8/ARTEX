@@ -75,6 +75,7 @@ func (s *Server) startTaskArchiveWorker() {
 			}); err != nil {
 				log.Printf("[task-archive] recover traffic staging: %v", err)
 			}
+			s.m.traffic.RunDeferredMaintenance()
 		}()
 	}
 	s.archiveWG.Add(1)
@@ -287,7 +288,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	committed = true
 	removePackage = false
 	if trafficStage != nil {
-		if err := trafficStage.Commit(); err != nil {
+		if err := trafficStage.CommitDeferredMaintenance(); err != nil {
 			warning := "归档已完成，但独占流量热存储清理失败（归档包仍可恢复）：" + err.Error()
 			log.Printf("[task-archive] task %s: %s", taskID, warning)
 			_ = s.m.pg.AppendTaskArchiveWarning(job.ID, warning)

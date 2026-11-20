@@ -1821,6 +1821,18 @@ func (s *HostDeleteStage) rollbackLocked() error {
 // Commit makes the staged deletion permanent. SQLite is committed only after
 // the caller has committed its PostgreSQL task deletion.
 func (s *HostDeleteStage) Commit() error {
+	return s.commit(true)
+}
+
+// CommitDeferredMaintenance makes the staged deletion durable but leaves index
+// compaction and blob collection to the caller's later idle window. Archive
+// queues use this so a completed package does not make the next job wait behind
+// minutes of best-effort storage maintenance.
+func (s *HostDeleteStage) CommitDeferredMaintenance() error {
+	return s.commit(false)
+}
+
+func (s *HostDeleteStage) commit(runMaintenance bool) error {
 	if s == nil || s.done {
 		return nil
 	}
@@ -1838,9 +1850,21 @@ func (s *HostDeleteStage) Commit() error {
 	s.done = true
 	s.traffic.wmu.Unlock()
 	s.traffic.reapStage(s.stageDir)
-	s.traffic.reclaim()
-	s.traffic.gcBlobsAsync()
+	if runMaintenance {
+		s.traffic.RunDeferredMaintenance()
+	}
 	return nil
+}
+
+// RunDeferredMaintenance starts best-effort index and blob reclamation. It is
+// intentionally asynchronous; callers should invoke it only when latency-heavy
+// archive work is no longer queued.
+func (t *Traffic) RunDeferredMaintenance() {
+	if t == nil {
+		return
+	}
+	t.reclaim()
+	t.gcBlobsAsync()
 }
 
 // indexBytes is the index's real footprint on disk: the database plus its
