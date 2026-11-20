@@ -171,6 +171,38 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, 1, host, "GET", "/", "https://"+host+"/", 20
 	}
 }
 
+func TestGCBlobsCooperativePreservesLiveAndRemovesOrphan(t *testing.T) {
+	tr, err := Open(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	const liveHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const orphanHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, hash := range []string{liveHash, orphanHash} {
+		p := filepath.Join(tr.dir, "_blobs", "sha256", hash[:2], hash+".bin")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(hash), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tr.DB().Exec(`INSERT INTO blob_refs(hash,exchange_id) VALUES(?,?)`, liveHash, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.gcBlobsCooperative(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(tr.dir, "_blobs", "sha256", liveHash[:2], liveHash+".bin")); err != nil {
+		t.Fatalf("live blob removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tr.dir, "_blobs", "sha256", orphanHash[:2], orphanHash+".bin")); !os.IsNotExist(err) {
+		t.Fatalf("orphan blob remains: %v", err)
+	}
+}
+
 func simulateTrafficStageProcessExit(t *testing.T, stage *HostDeleteStage) {
 	t.Helper()
 	if err := stage.tx.Rollback(); err != nil {

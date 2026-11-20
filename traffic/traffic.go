@@ -1474,6 +1474,20 @@ func (t *Traffic) reapStage(stageDir string) {
 	})
 }
 
+// gcBlobsAsync performs the best-effort blob sweep after releasing the archive
+// transaction lock. Large stores can contain millions of blob files; keeping
+// that walk on the archive worker would make a completed job block the FIFO for
+// minutes even though its package and database transaction are already durable.
+// The sweep only takes wmu around the final reference check and unlink, so a new
+// archive can keep using the store instead of waiting for the entire tree walk.
+func (t *Traffic) gcBlobsAsync() {
+	t.reaping.Go(func() {
+		if err := t.gcBlobsCooperative(); err != nil {
+			log.Printf("[traffic] 回收流量 blob 失败：%v", err)
+		}
+	})
+}
+
 // DeleteHostsExact removes recorded exchanges for a set of EXACT hosts (the
 // batch path for the page's multi-select delete): index rows + each host's file
 // tree, then one blob-GC pass. Exact match — unlike DeleteHost's substring —
@@ -1488,6 +1502,7 @@ func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 	if err := stage.Commit(); err != nil {
 		return deleted, err
 	}
+	t.reaping.Wait()
 	return deleted, nil
 }
 
@@ -1783,15 +1798,12 @@ func (s *HostDeleteStage) Commit() error {
 	// Unlinking the staged trees is what used to hold the write lock for hours;
 	// it now runs in the background, while collection below only needs them to be
 	// out of the live tree — which the staging rename already guaranteed.
-	s.traffic.reapStage(s.stageDir)
-	s.traffic.reclaim()
-	var errs []error
-	if err := s.traffic.gcBlobs(); err != nil {
-		errs = append(errs, fmt.Errorf("回收流量 blob: %w", err))
-	}
 	s.done = true
 	s.traffic.wmu.Unlock()
-	return errors.Join(errs...)
+	s.traffic.reapStage(s.stageDir)
+	s.traffic.reclaim()
+	s.traffic.gcBlobsAsync()
+	return nil
 }
 
 // indexBytes is the index's real footprint on disk: the database plus its
@@ -1970,6 +1982,70 @@ func (t *Traffic) gcBlobs() error {
 	sort.Slice(buckets, func(i, j int) bool { return len(buckets[i]) > len(buckets[j]) })
 	for _, b := range buckets {
 		os.Remove(b)
+	}
+	return nil
+}
+
+// gcBlobsCooperative is the archive-worker variant of gcBlobs. Its initial
+// reference snapshot avoids a database lookup for every live file. For each
+// apparent orphan it briefly serializes with record(), checks the current table
+// again, and only then removes the file. That second check is what makes the
+// unlocked directory walk safe when a recorder adds the same content hash.
+func (t *Traffic) gcBlobsCooperative() error {
+	refs := make(map[string]struct{})
+	rows, err := t.db.Query(`SELECT DISTINCT hash FROM blob_refs`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return err
+		}
+		refs[h] = struct{}{}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := t.legacyBlobRefs(refs); err != nil {
+		return err
+	}
+
+	root := filepath.Join(t.dir, "_blobs", "sha256")
+	var buckets []string
+	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d == nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root {
+				buckets = append(buckets, p)
+			}
+			return nil
+		}
+		h := strings.TrimSuffix(d.Name(), ".bin")
+		if _, ok := refs[h]; ok {
+			return nil
+		}
+		t.wmu.Lock()
+		var live int
+		checkErr := t.db.QueryRow(`SELECT 1 FROM blob_refs WHERE hash=? LIMIT 1`, h).Scan(&live)
+		if errors.Is(checkErr, sql.ErrNoRows) {
+			_ = os.Remove(p)
+			checkErr = nil
+		}
+		t.wmu.Unlock()
+		return checkErr
+	}); err != nil {
+		return err
+	}
+	sort.Slice(buckets, func(i, j int) bool { return len(buckets[i]) > len(buckets[j]) })
+	for _, b := range buckets {
+		t.wmu.Lock()
+		_ = os.Remove(b)
+		t.wmu.Unlock()
 	}
 	return nil
 }
