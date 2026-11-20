@@ -40,6 +40,21 @@ func (s *Server) startTaskArchiveWorker() {
 	s.archiveWG.Add(1)
 	go func() {
 		defer s.archiveWG.Done()
+		if s.m.traffic != nil {
+			if err := s.m.traffic.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
+				if taskID <= 0 {
+					return false, errors.New("归档流量暂存日志缺少任务 ID")
+				}
+				task, taskErr := s.m.pg.GetTask(taskID)
+				if taskErr != nil {
+					return false, taskErr
+				}
+				return task == nil, nil
+			}); err != nil {
+				log.Printf("[task-archive] recover traffic staging: %v", err)
+				return
+			}
+		}
 		if err := s.m.pg.RecoverTaskArchiveJobs(); err != nil {
 			log.Printf("[task-archive] recover jobs: %v", err)
 		}
