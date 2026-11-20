@@ -37,10 +37,14 @@ func (s *Server) startTaskArchiveWorker() {
 	if s.m == nil || s.m.pg == nil {
 		return
 	}
-	s.archiveWG.Add(1)
-	go func() {
-		defer s.archiveWG.Done()
-		if s.m.traffic != nil {
+	// A committed archive may leave a large traffic-index cleanup journal after
+	// an interrupted process. That cleanup is safe to resume independently: the
+	// archive package and PostgreSQL state are already durable. Do not hold the
+	// FIFO worker behind it, otherwise every queued archive stays at 0% for hours.
+	if s.m.traffic != nil {
+		s.archiveWG.Add(1)
+		go func() {
+			defer s.archiveWG.Done()
 			if err := s.m.traffic.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
 				if taskID <= 0 {
 					return false, errors.New("归档流量暂存日志缺少任务 ID")
@@ -52,9 +56,12 @@ func (s *Server) startTaskArchiveWorker() {
 				return task == nil, nil
 			}); err != nil {
 				log.Printf("[task-archive] recover traffic staging: %v", err)
-				return
 			}
-		}
+		}()
+	}
+	s.archiveWG.Add(1)
+	go func() {
+		defer s.archiveWG.Done()
 		if err := s.m.pg.RecoverTaskArchiveJobs(); err != nil {
 			log.Printf("[task-archive] recover jobs: %v", err)
 		}
