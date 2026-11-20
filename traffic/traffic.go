@@ -126,6 +126,10 @@ const (
 	// reclaimBudget caps one background reclamation. Deleting a busy host can free
 	// gigabytes, and the next deletion resumes wherever this one stopped.
 	reclaimBudget = 5 * time.Minute
+	// archiveRecoveryDeleteBatch bounds one committed recovery transaction. A
+	// large FTS5 delete can otherwise produce tens of gigabytes of WAL before
+	// SQLite gets a chance to checkpoint it, making startup recovery look hung.
+	archiveRecoveryDeleteBatch = 5000
 )
 
 // TrafficSearchDescription is persisted into the tool catalog for new and
@@ -1718,37 +1722,61 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 }
 
 func (t *Traffic) hostsHaveNoExchanges(hosts []string) (bool, error) {
-	for _, host := range hosts {
-		var count int
-		if err := t.db.QueryRow(`SELECT count(*) FROM exchanges WHERE host=?`, host).Scan(&count); err != nil {
-			return false, err
-		}
-		if count > 0 {
-			return false, nil
-		}
+	unique := uniqueArchiveHosts(hosts)
+	if len(unique) == 0 {
+		return true, nil
 	}
-	return true, nil
+	placeholders := make([]string, len(unique))
+	args := make([]any, len(unique))
+	for i, host := range unique {
+		placeholders[i] = "?"
+		args[i] = host
+	}
+	var exists int
+	err := t.db.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM exchanges WHERE host IN ("+strings.Join(placeholders, ",")+") LIMIT 1)",
+		args...,
+	).Scan(&exists)
+	return exists == 0, err
 }
 
 func (t *Traffic) deleteArchivedHosts(hosts []string) error {
-	tx, err := t.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
 	unique := uniqueArchiveHosts(hosts)
-	if len(unique) > 0 {
-		placeholders := make([]string, len(unique))
-		args := make([]any, len(unique))
-		for i, host := range unique {
-			placeholders[i] = "?"
-			args[i] = host
-		}
-		if _, err := t.deleteWhere(tx, `host IN (`+strings.Join(placeholders, ",")+`)`, args...); err != nil {
+	if len(unique) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(unique))
+	args := make([]any, len(unique), len(unique)+1)
+	for i, host := range unique {
+		placeholders[i] = "?"
+		args[i] = host
+	}
+	where := "host IN (" + strings.Join(placeholders, ",") + ")"
+	for {
+		tx, err := t.db.Begin()
+		if err != nil {
 			return err
 		}
+		batchArgs := append(args, archiveRecoveryDeleteBatch)
+		limited := "rowid IN (SELECT rowid FROM exchanges WHERE " + where + " ORDER BY rowid LIMIT ?)"
+		n, err := t.deleteWhere(tx, limited, batchArgs...)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		// Recovery has already committed its archive package, so every batch is
+		// independently durable. Truncating here bounds WAL growth and means an
+		// interruption resumes from the remaining rows instead of replaying all.
+		if _, err := t.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			return fmt.Errorf("归档流量清理检查点: %w", err)
+		}
 	}
-	return tx.Commit()
 }
 
 func pathWithin(root, candidate string) bool {

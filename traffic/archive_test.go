@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,6 +187,64 @@ func TestRecoverCommittedArchiveSkipsAlreadyDeletedIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
 		t.Fatalf("committed empty stage remains: %v", err)
+	}
+}
+
+func TestRecoverCommittedArchiveResumesBatchedDelete(t *testing.T) {
+	trafficDir := t.TempDir()
+	tr, err := Open(trafficDir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	const host = "batched-recovery.example"
+	tx, err := tr.DB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < archiveRecoveryDeleteBatch+1; i++ {
+		id := fmt.Sprintf("batch-%06d", i)
+		if _, err := tx.Exec("INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path) VALUES(?,?,?,?,?,?,?,?,?,?,?)", id, i, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 0, ""); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	stageDir := filepath.Join(trafficDir, "_delete_staging", "hosts-batched")
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := "{\"version\":1,\"archive_id\":20,\"task_id\":45,\"hosts\":[\"" + host + "\"],\"moves\":null}"
+	if err := os.WriteFile(filepath.Join(stageDir, hostDeleteStageJournalName), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.DB().Exec("CREATE TRIGGER fail_last_recovery_row BEFORE DELETE ON exchanges WHEN OLD.id='batch-005000' BEGIN SELECT RAISE(ABORT, 'forced recovery failure'); END"); err != nil {
+		t.Fatal(err)
+	}
+	committed := func(id, taskID int64) (bool, error) { return id == 20 && taskID == 45, nil }
+	if err := tr.RecoverHostDeleteStages(committed); err == nil {
+		t.Fatal("batched recovery unexpectedly succeeded")
+	}
+	var count int
+	if err := tr.DB().QueryRow("SELECT count(*) FROM exchanges WHERE host=?", host).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("remaining exchanges=%d err=%v, want 1", count, err)
+	}
+	if _, err := os.Stat(stageDir); err != nil {
+		t.Fatalf("recovery journal removed after partial failure: %v", err)
+	}
+	if _, err := tr.DB().Exec("DROP TRIGGER fail_last_recovery_row"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.RecoverHostDeleteStages(committed); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.DB().QueryRow("SELECT count(*) FROM exchanges WHERE host=?", host).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("remaining exchanges=%d err=%v, want 0", count, err)
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Fatalf("recovery journal remains after retry: %v", err)
 	}
 }
 
